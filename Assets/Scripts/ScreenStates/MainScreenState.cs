@@ -93,8 +93,10 @@ namespace Assets.Scripts.ScreenStates
 
             if (Network.Client.Account != null)
             {
-                _lblAccount.text = Network.CurrentAccountType.ToString();
-                Debug.Log(Network.Client.Account.Value);
+                Faucet.GetTokensAsync(CancellationToken.None);
+
+                _lblAccount.text = Network.CurrentAccountName;
+                Debug.Log($"[{nameof(MainScreenState)}] {Network.Client.Account.Value}");
                 var address = Network.Client.Account.Value;
                 _lblAddress.text = address.Substring(0, 6) + " ... " + address.Substring(20, 6);
             }

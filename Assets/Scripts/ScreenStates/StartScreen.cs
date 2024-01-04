@@ -1,27 +1,26 @@
-﻿using UnityEngine;
+﻿using System;
+using System.Collections.Generic;
+using System.Threading;
+using UnityEngine;
 using UnityEngine.UIElements;
 
 namespace Assets.Scripts.ScreenStates
 {
     public class StartScreen : ScreenBaseState
     {
-        private Texture2D _portraitAlice;
-        private Texture2D _portraitBob;
-        private Texture2D _portraitCharlie;
-        private Texture2D _portraitDave;
+        private Button _btnEnter;
 
         private VisualElement _velPortrait;
-        
+        private VisualElement _playerNameContainer;
+        private TextField _playerNameInput;
+
         private Label _lblPlayerName;
         private Label _lblNodeType;
 
         public StartScreen(HexalemController _flowController)
             : base(_flowController) 
         {
-            _portraitAlice = Resources.Load<Texture2D>($"Images/alice_portrait");
-            _portraitBob = Resources.Load<Texture2D>($"Images/bob_portrait");
-            _portraitCharlie = Resources.Load<Texture2D>($"Images/charlie_portrait");
-            _portraitDave = Resources.Load<Texture2D>($"Images/dave_portrait");
+
         }
 
         public override void EnterState()
@@ -36,15 +35,19 @@ namespace Assets.Scripts.ScreenStates
             _velPortrait = instance.Q<VisualElement>("VelPortrait");
            _lblPlayerName = instance.Q<Label>("LblPlayerName");
 
-            var btnEnter = instance.Q<Button>("BtnEnter");
-            btnEnter.RegisterCallback<ClickEvent>(OnEnterClicked);
+            _btnEnter = instance.Q<Button>("BtnEnter");
+            _btnEnter.RegisterCallback<ClickEvent>(OnEnterClicked);
 
             _lblNodeType = instance.Q<Label>("LblNodeType");
             _lblNodeType.RegisterCallback<ClickEvent>(OnNodeTypeClicked);
 
+            _playerNameContainer = instance.Q<VisualElement>("PlayerNameContainer");
+            _playerNameInput = instance.Q<TextField>("FieldPlayerCustomName");
+            _playerNameInput.RegisterValueChangedCallback(OnCustomNameChanged);
+
             // initially select alice
-            Network.SetAccount(AccountType.Alice);
-            _velPortrait.style.backgroundImage = _portraitAlice;
+            Network.SetAccount(AccountManager.DefaultAccountType);
+            _velPortrait.style.backgroundImage = AccountManager.GetInstance().GetPortrait(AccountManager.DefaultAccountType);
 
             Grid.OnSwipeEvent += OnSwipeEvent;
 
@@ -63,57 +66,43 @@ namespace Assets.Scripts.ScreenStates
 
         private void OnSwipeEvent(Vector3 direction)
         {
+            PlayableAccount? selectedAccount = null;
 
             if (direction == Vector3.left)
             {
-                switch (Network.CurrentAccountType)
-                {
-                    case AccountType.Alice:
-                        Network.SetAccount(AccountType.Bob);
-                        _lblPlayerName.text = AccountType.Bob.ToString();
-                        _velPortrait.style.backgroundImage = _portraitBob;
-                        break;
-                    case AccountType.Bob:
-                        Network.SetAccount(AccountType.Charlie);
-                        _lblPlayerName.text = AccountType.Charlie.ToString();
-                        _velPortrait.style.backgroundImage = _portraitCharlie;
-                        break;
-                    case AccountType.Charlie:
-                        Network.SetAccount(AccountType.Dave);
-                        _lblPlayerName.text = AccountType.Dave.ToString();
-                        _velPortrait.style.backgroundImage = _portraitDave;
-                        break;
-                    case AccountType.Dave:
-                    default:
-                        break;
-                }
+                selectedAccount = AccountManager.GetInstance().findNextPlayableAccount(Network.CurrentAccountType);
             }
             else if (direction == Vector3.right)
             {
-                switch (Network.CurrentAccountType)
-                {
-                    case AccountType.Bob:
-                        Network.SetAccount(AccountType.Alice);
-                        _lblPlayerName.text = AccountType.Alice.ToString();
-                        _velPortrait.style.backgroundImage = _portraitAlice;
-                        break;
-                    case AccountType.Charlie:
-                        Network.SetAccount(AccountType.Bob);
-                        _lblPlayerName.text = AccountType.Bob.ToString();
-                        _velPortrait.style.backgroundImage = _portraitBob;
-                        break;
-                    case AccountType.Dave:
-                        Network.SetAccount(AccountType.Charlie);
-                        _lblPlayerName.text = AccountType.Charlie.ToString();
-                        _velPortrait.style.backgroundImage = _portraitCharlie;
-                        break;
-                    case AccountType.Alice:
-                    default:
-                        break;
-                }
+                selectedAccount = AccountManager.GetInstance().findPreviousPlayableAccount(Network.CurrentAccountType);
             }
 
+            if(selectedAccount != null)
+            {
+                if (selectedAccount.Value.isCustom)
+                {
+                    _playerNameContainer.style.display = DisplayStyle.Flex;
+                    _lblPlayerName.style.display = DisplayStyle.None;
+
+                    Network.SetAccount(AccountType.Custom, _playerNameInput.text);
+                    _btnEnter.SetEnabled(AccountManager.GetInstance().IsAccountNameValid(_playerNameInput.text));
+                }
+                else
+                {
+                    _playerNameContainer.style.display = DisplayStyle.None;
+                    _lblPlayerName.style.display = DisplayStyle.Flex;
+
+                    _lblPlayerName.text = selectedAccount.Value.name;
+                    _btnEnter.SetEnabled(true);
+
+                    Network.SetAccount(selectedAccount.Value.accountType);
+                }
+
+                _velPortrait.style.backgroundImage = selectedAccount.Value.portrait;
+            }
         }
+
+        
 
         private void OnEnterClicked(ClickEvent evt)
         {
@@ -126,6 +115,21 @@ namespace Assets.Scripts.ScreenStates
         {
             Network.ToggleNodeType();
             _lblNodeType.text = Network.CurrentNodeType.ToString();
+        }
+
+        private void OnCustomNameChanged(ChangeEvent<string> evt)
+        {
+            Debug.Log($"New custom player account name = {evt.newValue}");
+
+            if (Network.CurrentAccountType != AccountType.Custom) return;
+
+            bool isNameValid = AccountManager.GetInstance().IsAccountNameValid(_playerNameInput.text);
+            _btnEnter.SetEnabled(isNameValid);
+            
+            if(isNameValid)
+            {
+                Network.SetAccount(Network.CurrentAccountType, _playerNameInput.text);
+            }
         }
     }
 }

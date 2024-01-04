@@ -1,5 +1,7 @@
 using Schnorrkel.Keys;
+using Substrate.Hexalem.NET.NetApiExt.Generated.Model.frame_system;
 using Substrate.Integration;
+using Substrate.Integration.Client;
 using Substrate.Integration.Helper;
 using Substrate.NET.Wallet;
 using Substrate.NetApi;
@@ -9,6 +11,10 @@ using System.Collections.Generic;
 using System.Data;
 using System.IO;
 using System.Linq;
+using System.Numerics;
+using System.Threading;
+using System.Threading.Tasks;
+using UnityEditor.PackageManager;
 using UnityEngine;
 
 namespace Assets.Scripts
@@ -18,7 +24,8 @@ namespace Assets.Scripts
         Alice,
         Bob,
         Charlie,
-        Dave
+        Dave,
+        Custom
     }
 
     public enum NodeType
@@ -63,6 +70,7 @@ namespace Assets.Scripts
         private readonly NetworkType _networkType = NetworkType.Live;
 
         public AccountType CurrentAccountType { get; private set; }
+        public string CurrentAccountName { get; private set; }
 
         public NodeType CurrentNodeType { get; private set; }
 
@@ -76,6 +84,7 @@ namespace Assets.Scripts
             base.Awake();
             //Your code goes here
             CurrentAccountType = AccountType.Alice;
+            CurrentAccountName = CurrentAccountType.ToString();
             CurrentNodeType = NodeType.Local;
             Sudo = Alice;
             _nodeUrl = "ws://127.0.0.1:9944";
@@ -114,34 +123,38 @@ namespace Assets.Scripts
             ExtrinsicCheck?.Invoke();
         }
 
-        public bool SetAccount(AccountType accountType)
+        public bool SetAccount(AccountType accountType, string name = null)
         {
             CurrentAccountType = accountType;
-
-            switch (accountType)
-            {
-                case AccountType.Alice:
-                    Client.Account = Alice;
-                    break;
-
-                case AccountType.Bob:
-                    Client.Account = Bob;
-                    break;
-
-                case AccountType.Charlie:
-                    Client.Account = Charlie;
-                    break;
-
-                case AccountType.Dave:
-                    Client.Account = Dave;
-                    break;
-
-                default:
-                    Client.Account = Alice;
-                    break;
-            }
+            CurrentAccountName = name ?? accountType.ToString();
+            Client.Account = GetAccount(accountType, name);
 
             return true;
+        }
+
+        public Account? GetAccount(AccountType accountType, string name = null)
+        {
+            switch (accountType)
+            {
+                case AccountType.Alice: return Alice;
+                case AccountType.Bob: return Bob;
+                case AccountType.Charlie: return Charlie;
+                case AccountType.Dave: return Dave;
+                case AccountType.Custom:
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        // No derivation => return Alice
+                        return Alice;
+                    }
+
+                    var customAccountDerived = BaseClient.DeriveAccount(Alice, name.ToLower());
+
+                    Debug.Log($"Custom account (Alice derived with {name.ToLower()} public key : {Utils.GetAddressFrom(customAccountDerived.Bytes)}");
+                    return customAccountDerived;
+
+                default:
+                    return Alice;
+            }
         }
 
         public bool ToggleNodeType()
