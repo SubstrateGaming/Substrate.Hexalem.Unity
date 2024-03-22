@@ -172,15 +172,21 @@ namespace Assets.Scripts.ScreenStates
             FlowController.ChangeScreenState(DemoGameScreen.PlayScreen);
         }
 
-        private void OnBtnPlayClicked(ClickEvent evt)
+        private async void OnBtnPlayClicked(ClickEvent evt)
         {
             if (Storage.HexaGame != null)
             {
+                Debug.Log($"[{nameof(MainChooseSubState)}] Player is already in a game");
                 FlowController.ChangeScreenState(DemoGameScreen.PlayScreen);
-            }
-            else
+            } else
             {
-                FlowController.ChangeScreenSubState(DemoGameScreen.MainScreen, DemoGameSubScreen.MainInvite);
+                if (!Storage.IsAlreadyInQueue)
+                {
+                    Debug.Log($"[{nameof(MainChooseSubState)}] Player is not currently in a queue");
+                    await Network.Client.QueueAsync(Network.Client.Account, 1, CancellationToken.None);
+                }                
+
+                FlowController.ChangeScreenSubState(DemoGameScreen.MainScreen, DemoGameSubScreen.PlayMatchmaking);
             }
         }
 

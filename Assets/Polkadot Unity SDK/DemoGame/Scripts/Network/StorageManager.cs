@@ -1,12 +1,15 @@
 using Substrate.Hexalem.Engine;
 using Substrate.Hexalem.Integration.Model;
+using Substrate.Hexalem.NET.NetApiExt.Generated.Storage;
 using Substrate.Integration.Helper;
 using Substrate.Integration.Model;
+using Substrate.NetApi;
 using Substrate.NetApi.Model.Types;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace Assets.Scripts
@@ -41,12 +44,23 @@ namespace Assets.Scripts
 
         public event BoardStateChangedHandler OnBoardStateChanged;
 
+        public delegate void MatchFoundHandler(byte[] gameId);
+        public event MatchFoundHandler OnGameFound;
+
+        public delegate void ForceAcceptMatchHandler();
+        public event ForceAcceptMatchHandler OnForceStartMatch;
+
+        public delegate void GameStartedhHandler(byte[] gameId);
+        public event GameStartedhHandler OnGameStarted;
+
         public NetworkManager Network => NetworkManager.GetInstance();
 
         public uint BlockNumber { get; private set; }
 
         public AccountInfoSharp AccountInfo { get; private set; }
-
+        public uint AccountEloRating { get; private set; }
+        public bool IsAlreadyInQueue { get; private set; }
+        public List<uint> PlayersInSameBracket { get; private set; } = new();
         public HexaGame HexaGame { get; private set; }
 
         public bool UpdateHexalem { get; internal set; }
@@ -56,6 +70,7 @@ namespace Assets.Scripts
         public bool[] HasAccountBoard { get; internal set; }
 
         private bool _isPolling;
+        private uint? blockNumberNewGameIsCreated;
 
         /// <summary>
         /// Awake is called when the script instance is being loaded
@@ -99,7 +114,7 @@ namespace Assets.Scripts
 
             if (!Network.Client.IsConnected)
             {
-                Debug.Log($"[StorageManager] Client is not connected");
+                //Debug.Log($"[StorageManager] Client is not connected");
                 return false;
             }
 
@@ -127,7 +142,7 @@ namespace Assets.Scripts
                 return;
             }
 
-            var blockNumber = await Network.Client.GetBlocknumberAsync(CancellationToken.None);
+            var blockNumber = await Network.Client.GetBlocknumberAsync(null, CancellationToken.None);
 
             if (blockNumber == null || BlockNumber >= blockNumber)
             {
@@ -151,34 +166,89 @@ namespace Assets.Scripts
             var stopwatch = new System.Diagnostics.Stopwatch(); // Create a Stopwatch instance
             stopwatch.Start(); // Start timing
 
-            AccountInfo = await Network.Client.GetAccountAsync(CancellationToken.None);
+            AccountInfo = await Network.Client.GetAccountAsync(null, CancellationToken.None);
 
-            var myBoard = await Network.Client.GetBoardAsync(Network.Client.Account.Value, CancellationToken.None);
-            var playerGame = myBoard != null ? await Network.Client.GetGameAsync(myBoard.GameId, CancellationToken.None) : null;
+            AccountEloRating = await Network.Client.GetRatingStorageAsync(Network.Client.Account.ToString(), CancellationToken.None);
+            IsAlreadyInQueue = await Network.Client.IsPlayerInMatchmakingAsync(Network.Client.Account, CancellationToken.None);
+
+            // Get the game id
+            // 1. If we are in matchmaking => matchmaking state
+            // 2. if we are playing => board state
+            GameSharp playerGame = null;
+
+            var matchmaking = await Network.Client.GetMatchmakingStateAsync(Network.Client.Account, null, CancellationToken.None);
+            if (matchmaking.IsGameFound)
+            {
+                if (blockNumberNewGameIsCreated == null)
+                {
+                    Debug.Log($"Game is created at block {blockNumberNewGameIsCreated}");
+                    blockNumberNewGameIsCreated = blockNumber.Value;
+                }
+
+                playerGame = await Network.Client.GetGameAsync(matchmaking.GameId, null, CancellationToken.None);
+
+                var playerIndex = playerGame.Players.ToList().IndexOf(Network.Client.Account.ToString());
+                if (!playerGame.PlayerAccepted[playerIndex])
+                {
+                    Debug.Log($"New game found for player {Network.Client.Account}");
+                    OnGameFound?.Invoke(matchmaking.GameId);
+                }
+            }
+
+            await HandleQueueSameBracket();
+
+
+            // Just fake it until I get the real value
+            //PlayersInSameBracket = new List<uint>() { 1500, 1000, 1200, 1100 };
+
+            var myBoard = await Network.Client.GetBoardAsync(Network.Client.Account.Value, null, CancellationToken.None);
+            playerGame = playerGame == null && myBoard != null ?
+                await Network.Client.GetGameAsync(myBoard.GameId, null, CancellationToken.None) :
+                null;
             if (myBoard == null || playerGame == null)
             {
                 HexaGame = null;
             }
             else
             {
-                var playerBoards = new List<BoardSharp>();
-                foreach (var player in playerGame.Players)
+                Debug.Log($"[{nameof(StorageManager)}]  Player game state {playerGame.State}");
+                switch (playerGame.State)
                 {
-                    var playerBoard = await Network.Client.GetBoardAsync(player, CancellationToken.None);
-                    if (playerBoard != null)
-                    {
-                        playerBoards.Add(playerBoard);
-                    }
-                }
+                    case Substrate.Hexalem.NET.NetApiExt.Generated.Model.pallet_hexalem.types.game.GameState.Accepting:
+                        
+                        if (blockNumber - blockNumberNewGameIsCreated > Network.Client.BlocksToAcceptMatchLimit())
+                        {
+                            OnForceStartMatch?.Invoke();
+                        }
+                        break;
+                    case Substrate.Hexalem.NET.NetApiExt.Generated.Model.pallet_hexalem.types.game.GameState.Playing:
+                        Debug.Log($"[{nameof(StorageManager)}]  GameId = {Utils.Bytes2HexString(playerGame.GameId)} | Nb players = {playerGame.Players.Length}");
 
-                HexaGame oldGame = null;
-                if (HexaGame != null)
-                {
-                    oldGame = (HexaGame)HexaGame.Clone();
+                        var playerBoards = new List<BoardSharp>();
+                        foreach (var player in playerGame.Players)
+                        {
+                            var playerBoard = await Network.Client.GetBoardAsync(player, null, CancellationToken.None);
+                            if (playerBoard != null)
+                            {
+                                playerBoards.Add(playerBoard);
+                            }
+                        }
+
+                        HexaGame oldGame = null;
+                        if (HexaGame != null)
+                        {
+                            oldGame = (HexaGame)HexaGame.Clone();
+                        }
+                        HexaGame = HexalemWrapper.GetHexaGame(playerGame, playerBoards.ToArray());
+                        // check for the event
+                        HexaGameDiff(oldGame, HexaGame, PlayerIndex(Network.Client.Account).Value);
+
+                        OnGameStarted?.Invoke(playerGame.GameId);
+                        break;
+                    case Substrate.Hexalem.NET.NetApiExt.Generated.Model.pallet_hexalem.types.game.GameState.Finished:
+                        // Todo
+                        break;
                 }
-                HexaGame = HexalemWrapper.GetHexaGame(playerGame, playerBoards.ToArray());
-                // check for the event
-                HexaGameDiff(oldGame, HexaGame, PlayerIndex(Network.Client.Account).Value);
             }
 
             OnStorageUpdated?.Invoke(blockNumber.Value);
@@ -187,6 +257,33 @@ namespace Assets.Scripts
             Debug.Log($"Poll Storage: {stopwatch.ElapsedMilliseconds} ms");
 
             _isPolling = false;
+        }
+
+        private async Task HandleQueueSameBracket()
+        {
+            var playerBracket = await Network.Client.GetPlayerBracketAsync(Network.Client.Account, CancellationToken.None);
+            var bracketIndice = await Network.Client.GetBracketIndicesAsync((byte)playerBracket, CancellationToken.None);
+
+            Debug.Log($"[{nameof(StorageManager)}] Player bracket = {playerBracket} | bracketIndice = [{bracketIndice.Item1},{bracketIndice.Item2}]");
+
+            if (bracketIndice.Item2 > bracketIndice.Item1)
+            {
+                List<Task<uint>> playersInQueueSameBracketRating = new();
+                for (uint i = bracketIndice.Item1; i < bracketIndice.Item2; i++)
+                {
+                    var playerAddress = await Network.Client.GetPlayerBracketIndexAsync((byte)playerBracket, i, CancellationToken.None);
+
+                    if (playerAddress != Network.Client.Account.ToString())
+                    {
+                        playersInQueueSameBracketRating.Add(Network.Client.GetRatingStorageAsync(playerAddress, CancellationToken.None));
+                    }
+                }
+                PlayersInSameBracket = (await Task.WhenAll(playersInQueueSameBracketRating)).ToList();
+                Debug.Log($"Nb Player same bracket in queue = {string.Join(", ", PlayersInSameBracket)}");
+            } else
+            {
+                Debug.Log($"[{nameof(StorageManager)}] No player is currently queueing in the same bracket");
+            }
         }
 
         public void HexaGameDiff(HexaGame oldGame, HexaGame newGame, int playerIndex)
@@ -243,8 +340,8 @@ namespace Assets.Scripts
 
         public int? PlayerIndex(Account account) => HexaGame?.HexaTuples.FindIndex(p => p.player.Id.SequenceEqual(account.Bytes));
 
-        public HexaPlayer Player(int playerIndex) => HexaGame?.HexaTuples[playerIndex].player;
+        public HexaPlayer Player(int playerIndex) => HexaGame?.CurrentPlayer;
 
-        public HexaBoard Board(int playerIndex) => HexaGame?.HexaTuples[playerIndex].board;
+        public HexaBoard Board(int playerIndex) => HexaGame?.CurrentPlayerBoard;
     }
 }
